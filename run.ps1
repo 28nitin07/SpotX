@@ -2,7 +2,7 @@
 param
 (
     [Parameter(HelpMessage = 'Latest recommended Spotify version for Windows 10+.')]
-    [string]$latest_full = "1.3.0",
+    [string]$latest_full = "1.3.1",
 
     [Parameter(HelpMessage = 'Latest supported Spotify version for Windows 7-8.1')]
     [string]$last_win7_full = "1.2.5.1006.g22820f93",
@@ -349,6 +349,9 @@ $xpui_spa_patch = Join-Path (Join-Path $spotifyDirectory 'Apps') 'xpui.spa'
 
 $upgrade_client = $false
 $downgrading = $false
+$uninstallSpotify = $false
+$uninstallStoreSpotify = $false
+$installedVersion = $null
 $ru = $false
 $podcast_off = $false
 $css = $null
@@ -1774,9 +1777,7 @@ function Kill-Spotify {
 }
 
 
-Kill-Spotify
-
-# Remove Spotify Windows Store If Any
+# Defer removal until the replacement is ready
 if ($win10 -or $win11 -or $win8_1 -or $win8 -or $win12) {
 
     if (Get-AppxPackage -Name SpotifyAB.SpotifyMusic) {
@@ -1795,16 +1796,7 @@ if ($win10 -or $win11 -or $win8_1 -or $win8 -or $win12) {
         }
         if ($confirm_uninstall_ms_spoti) { $ch = 'y' }
         if ($ch -eq 'y') {
-            $previousProgressPreference = $ProgressPreference
-            try {
-                $ProgressPreference = 'SilentlyContinue' # Hiding Progress Bars
-                if ($confirm_uninstall_ms_spoti) { Write-Host ($lang).MsSpoti3`n }
-                if (!($confirm_uninstall_ms_spoti)) { Write-Host ($lang).MsSpoti4`n }
-                Get-AppxPackage -Name SpotifyAB.SpotifyMusic | Remove-AppxPackage
-            }
-            finally {
-                $ProgressPreference = $previousProgressPreference
-            }
+            $uninstallStoreSpotify = $true
         }
         if ($ch -eq 'n') {
             Stop-Script
@@ -1827,6 +1819,7 @@ if ($spotifyInstalled) {
 
     # Check version Spotify offline
     $offline = (Get-Item $spotifyExecutable).VersionInfo.FileVersion
+    $installedVersion = $offline
 
     # Version comparison
     # converting strings to arrays of numbers using the -split operator and a foreach loop
@@ -1880,9 +1873,7 @@ if ($spotifyInstalled) {
             if ($confirm_spoti_recomended_uninstall) { $ch = 'y' }
             if ($confirm_spoti_recomended_over) { $ch = 'n' }
             if ($ch -eq 'y') {
-                Write-Host ($lang).DelSpotify`n
-                $null = Unlock-Folder
-                Invoke-SpotifyUninstall -InstalledVersion $offline
+                $uninstallSpotify = $true
             }
             if ($ch -eq 'n') { $ch = $null }
         }
@@ -1939,9 +1930,7 @@ if ($spotifyInstalled) {
                 if ($confirm_spoti_recomended_over) { $ch = 'n' }
                 if ($autoVersionDowngradeUninstall) { $ch = 'y' }
                 if ($ch -eq 'y') {
-                    Write-Host ($lang).DelSpotify`n
-                    $null = Unlock-Folder
-                    Invoke-SpotifyUninstall -InstalledVersion $offline
+                    $uninstallSpotify = $true
                 }
                 if ($ch -eq 'n') { $ch = $null }
             }
@@ -1953,69 +1942,11 @@ if ($spotifyInstalled) {
         }
     }
 }
-# If there is no client or it is outdated, then install (skip if custom path is used)
-if (-not $SpotifyPath -and (-not $spotifyInstalled -or $upgrade_client)) {
-
-    Write-Host ($lang).DownSpoti"" -NoNewline
-    Write-Host  $online -ForegroundColor Green
-    Write-Host ($lang).DownSpoti2`n
-
-    # Delete old version files of Spotify before installing, leave only profile files
-    $ErrorActionPreference = 'SilentlyContinue'
-    Kill-Spotify
-    Start-Sleep -Milliseconds 600
-    $null = Unlock-Folder
-    Start-Sleep -Milliseconds 200
-    Get-ChildItem $spotifyDirectory -Exclude 'Users', 'prefs' | Remove-Item -Recurse -Force
-    Start-Sleep -Milliseconds 200
-
-    $tempDirName = "SpotX_Temp-$(Get-Date -UFormat '%Y-%m-%d_%H-%M-%S')"
-    $tempDirectory = Join-Path ([System.IO.Path]::GetTempPath()) $tempDirName
-    if (-not (Test-Path -LiteralPath $tempDirectory)) { New-Item -ItemType Directory -Path $tempDirectory | Out-Null }
-
-    # Client download
-    downloadSp -DownloadFolder $tempDirectory
-    Write-Host
-
-    Start-Sleep -Milliseconds 200
-
-    # Client installation
-    $setupExe = Join-Path $tempDirectory 'SpotifySetup.exe'
-    Start-Process -FilePath explorer.exe -ArgumentList $setupExe
-    while (-not (get-process | Where-Object { $_.ProcessName -eq 'SpotifySetup' })) {}
-    wait-process -name SpotifySetup
-    Kill-Spotify
-
-    # Upgrade check version Spotify offline
-    $offline = (Get-Item $spotifyExecutable).VersionInfo.FileVersion
-
-    # Upgrade check version Spotify.bak
-    $offline_bak = (Get-Item $exe_bak).VersionInfo.FileVersion
-}
-
-
-
-# Delete Spotify shortcut if it is on desktop
-if ($no_shortcut) {
-    $ErrorActionPreference = 'SilentlyContinue'
-    $desktop_folder = DesktopFolder
-    Start-Sleep -Milliseconds 1000
-    remove-item "$desktop_folder\Spotify.lnk" -Recurse -Force
-}
+$installSpotify = -not $SpotifyPath -and (-not $spotifyInstalled -or $upgrade_client)
+if ($installSpotify) { $offline = $online }
 
 $ch = $null
 
-
-# updated Russian translation
-if ($langCode -eq 'ru' -and [version]$offline -ge [version]"1.1.92.644") {
-
-    $webjsonru = Get -Url (Get-Link -e "/patches/Augmented%20translation/ru.json")
-
-    if ($webjsonru -ne $null) {
-
-        $ru = $true
-    }
-}
 
 if ($podcasts_off) {
     Write-Host ($lang).PodcatsOff`n
@@ -2068,23 +1999,9 @@ if (!($new_theme) -and [version]$offline -ge [version]"1.2.14.1141") {
 
 if ($ch -eq 'n') {
     $not_block_update = $true
-    $ErrorActionPreference = 'SilentlyContinue'
-    if ((Test-Path -LiteralPath $exe_bak) -and $offline -eq $offline_bak) {
-        Remove-Item $spotifyExecutable -Recurse -Force
-        Rename-Item $exe_bak $spotifyExecutable
-    }
 }
 
 $ch = $null
-
-$webjson = Get-PatchesJson -LocalPath $CustomPatchesPath
-
-if ($webjson -eq $null) {
-    Write-Host
-    Write-Host "Failed to load patches.json" -ForegroundColor Red
-    Remove-TempDirectory -Directory $tempDirectory
-    Stop-Script
-}
 
 function Get-JsonValue {
     param (
@@ -2571,36 +2488,26 @@ function Helper($paramname, [switch]$CheckOnly) {
             $matchPatterns = @($matchValue)
             $replacements = @($replaceValue)
 
-            if ($matchPatterns.Count -gt 1) {
-
-                $count = $matchPatterns.Count - 1
-                $numbers = 0
-
-                While ($numbers -le $count) {
-
-                    if ($paramdata -match $matchPatterns[$numbers]) {
-                        $paramdata = $paramdata -replace $matchPatterns[$numbers], $replacements[$numbers]
-                    }
-                    else {
-                        $notlog = "MinJs", "MinJson", "Cssmin"
-                        if ($paramname -notin $notlog) {
-
-                            Write-Host $novariable -ForegroundColor red -NoNewline
-                            Write-Host "$name$contentName $numbers"'in'$n
-                        }
-                    }
-                    $numbers++
-                }
+            $isMultiple = $matchPatterns.Count -gt 1
+            $logMissing = if ($isMultiple) {
+                $paramname -notin @("MinJs", "MinJson", "Cssmin")
             }
-            if ($matchPatterns.Count -eq 1) {
-                if ($paramdata -match $matchPatterns[0]) {
-                    $paramdata = $paramdata -replace $matchPatterns[0], $replacements[0]
+            else {
+                !$translate -or $err_ru
+            }
+
+            for ($i = 0; $i -lt $matchPatterns.Count; $i++) {
+                if ($paramdata -match $matchPatterns[$i]) {
+                    $paramdata = $paramdata -replace $matchPatterns[$i], $replacements[$i]
                 }
-                else {
-                    if (!($translate) -or $err_ru) {
-                        Write-Host $novariable -ForegroundColor red -NoNewline
-                        Write-Host "$name$contentName"'in'$n
+                elseif ($logMissing) {
+                    $patchLabel = "$name$contentName"
+                    if ($isMultiple) {
+                        $patchLabel += " $i"
                     }
+
+                    Write-Host $novariable -ForegroundColor red -NoNewline
+                    Write-Host $patchLabel 'in' $n
                 }
             }
         }
@@ -2727,6 +2634,7 @@ function injection {
                 $stream = $entry.Open()
             }
 
+            $stream.SetLength(0)
             $writer = [System.IO.StreamWriter]::new($stream)
             $writer.Write($fileContent)
 
@@ -2749,13 +2657,33 @@ function injection {
                 $filesToInject = if ($FilesToInject) { $FilesToInject } else { $FileNames }
 
                 foreach ($fileName in $filesToInject) {
+                    $resourcePath = "/$FolderInArchive/$fileName"
                     if ($fileName.EndsWith(".js")) {
-                        $modifiedIndexContent = $indexContent.Insert($scriptTagIndex, "<script defer=`"defer`" src=`"/$FolderInArchive/$fileName`"></script>")
-                        $indexContent = $modifiedIndexContent
+                        $tagName = 'script'
+                        $attribute = 'src'
+                        $insertIndex = $scriptTagIndex
+                        $tag = "<script defer=`"defer`" src=`"$resourcePath`"></script>"
                     }
                     elseif ($fileName.EndsWith(".css")) {
-                        $modifiedIndexContent = $indexContent.Insert($headTagIndex, "<link href=`"/$FolderInArchive/$fileName`" rel=`"stylesheet`">")
-                        $indexContent = $modifiedIndexContent
+                        $tagName = 'link'
+                        $attribute = 'href'
+                        $insertIndex = $headTagIndex
+                        $tag = "<link href=`"$resourcePath`" rel=`"stylesheet`">"
+                    }
+                    else { continue }
+
+                    $connectionPattern = '(?i)<' + $tagName + '(?=\s)(?:[^>"'']|"[^"]*"|''[^'']*'')*?\s' +
+                        $attribute + '\s*=\s*(["''])(?-i:' + [regex]::Escape($resourcePath) + ')\1'
+                    if ([regex]::IsMatch($indexContent, $connectionPattern)) { continue }
+
+                    $indexContent = $indexContent.Insert($insertIndex, $tag)
+
+                    # Shift the other insertion point without reordering same-type files
+                    if ($tagName -eq 'script') {
+                        if ($headTagIndex -ge $insertIndex) { $headTagIndex += $tag.Length }
+                    }
+                    elseif ($scriptTagIndex -ge $insertIndex) {
+                        $scriptTagIndex += $tag.Length
                     }
                 }
 
@@ -2822,29 +2750,9 @@ function Extract-WebpackModules {
     $searchStartMarker = Encode-UTF16LE -Bytes $StartMarker
     $searchEndMarker = Encode-UTF16LE -Bytes $EndMarker
 
-    function IndexOfBytes($haystack, $needle, [int]$startIndex = 0) {
-        if ($startIndex -lt 0) { $startIndex = 0 }
-        $haystackLength = $haystack.Length
-        $needleLength = $needle.Length
-        $searchLimit = $haystackLength - $needleLength
-        if ($searchLimit -lt $startIndex) { return -1 }
-        $firstNeedleByte = $needle[0]
-        for ($i = $startIndex; $i -le $searchLimit; $i++) {
-            if ($haystack[$i] -eq $firstNeedleByte) {
-                $found = $true
-                for ($j = 1; $j -lt $needleLength; $j++) {
-                    if ($haystack[$i + $j] -ne $needle[$j]) {
-                        $found = $false
-                        break
-                    }
-                }
-                if ($found) { return $i }
-            }
-        }
-        return -1
-    }
+    Initialize-BinaryScanner
 
-    $startIdx = IndexOfBytes $fileContent $searchStartMarker 2
+    $startIdx = [BinaryScannerV3]::FindBytes($fileContent, $searchStartMarker, 2)
     if ($startIdx -eq -1) {
         Write-Error "Start marker not found"
         exit 1
@@ -2852,7 +2760,7 @@ function Extract-WebpackModules {
     Write-Debug "Start marker found at index $startIdx"
 
     $endMarkerSearchOffset = $startIdx + $searchStartMarker.Length
-    $endIdx = IndexOfBytes $fileContent $searchEndMarker $endMarkerSearchOffset
+    $endIdx = [BinaryScannerV3]::FindBytes($fileContent, $searchEndMarker, $endMarkerSearchOffset)
     if ($endIdx -eq -1) {
         Write-Error "End marker not found after index $endMarkerSearchOffset"
         exit 1
@@ -4573,39 +4481,50 @@ function Invoke-VerifiedBinaryPatch {
 
         $bytes = [System.IO.File]::ReadAllBytes($FilePath)
         $peInfo = Get-PEFileInfo -Bytes $bytes
-        $location = & $Locator $bytes $peInfo
+        $locations = @(& $Locator $bytes $peInfo | Sort-Object PatchOffset)
+        if ($locations.Count -eq 0) { throw "No $PatchName patch locations were found" }
         $requiredProperties = @('Architecture', 'State', 'PatchOffset', 'OriginalBytes', 'PatchedBytes')
-        $missingProperties = @($requiredProperties | Where-Object {
-                $null -eq $location -or $null -eq $location.PSObject.Properties[$_]
-            })
-        if ($missingProperties.Count -ne 0 -or $location.Architecture -ne $peInfo.Architecture) {
-            throw "Unexpected $PatchName locator result"
-        }
-        if ($null -eq $location.PatchedBytes -or $location.PatchedBytes.Length -eq 0 -or
-            $location.PatchOffset -lt 0 -or $location.PatchOffset + $location.PatchedBytes.Length -gt $bytes.Length) {
-            throw "$PatchName patch range is invalid"
-        }
-        if ($DescribeLocation) {
-            & $DescribeLocation $location
+        $previousEnd = -1L
+        foreach ($location in $locations) {
+            $missingProperties = @($requiredProperties | Where-Object {
+                    $null -eq $location -or $null -eq $location.PSObject.Properties[$_]
+                })
+            if ($missingProperties.Count -ne 0 -or $location.Architecture -ne $peInfo.Architecture) {
+                throw "Unexpected $PatchName locator result"
+            }
+            if ($null -eq $location.PatchedBytes -or $location.PatchedBytes.Length -eq 0 -or
+                $location.PatchOffset -lt 0 -or $location.PatchOffset + $location.PatchedBytes.Length -gt $bytes.Length) {
+                throw "$PatchName patch range is invalid"
+            }
+            if ($DescribeLocation) {
+                & $DescribeLocation $location
+            }
+
+            if ($location.State -eq 'Patched') {
+                if (-not [BinaryScannerV3]::MatchBytes($bytes, [int]$location.PatchOffset, $location.PatchedBytes)) {
+                    throw "Unexpected $PatchName patched state"
+                }
+            }
+            elseif ($location.State -ne 'Original' -or
+                $null -eq $location.OriginalBytes -or $location.OriginalBytes.Length -eq 0 -or
+                $location.OriginalBytes.Length -ne $location.PatchedBytes.Length -or
+                -not [BinaryScannerV3]::MatchBytes($bytes, [int]$location.PatchOffset, $location.OriginalBytes)) {
+                throw "Unexpected $PatchName patch state"
+            }
+            if ($location.PatchOffset -lt $previousEnd) { throw "$PatchName patch locations overlap" }
+            $previousEnd = $location.PatchOffset + $location.PatchedBytes.Length
         }
 
-        if ($location.State -eq 'Patched') {
-            if (-not [BinaryScannerV3]::MatchBytes($bytes, [int]$location.PatchOffset, $location.PatchedBytes)) {
-                throw "Unexpected $PatchName patched state"
-            }
-            Write-Verbose ("{0} already patched at offset 0x{1:X}" -f $PatchName, $location.PatchOffset)
+        if (@($locations | Where-Object State -ne 'Patched').Count -eq 0) {
+            Write-Verbose ("{0} already patched at {1} location(s)" -f $PatchName, $locations.Count)
             return $true
-        }
-        if ($location.State -ne 'Original' -or
-            $null -eq $location.OriginalBytes -or $location.OriginalBytes.Length -eq 0 -or
-            $location.OriginalBytes.Length -ne $location.PatchedBytes.Length -or
-            -not [BinaryScannerV3]::MatchBytes($bytes, [int]$location.PatchOffset, $location.OriginalBytes)) {
-            throw "Unexpected $PatchName patch state"
         }
 
         $patchedFileBytes = [byte[]]$bytes.Clone()
-        for ($i = 0; $i -lt $location.PatchedBytes.Length; $i++) {
-            $patchedFileBytes[[int]$location.PatchOffset + $i] = $location.PatchedBytes[$i]
+        foreach ($location in $locations) {
+            for ($i = 0; $i -lt $location.PatchedBytes.Length; $i++) {
+                $patchedFileBytes[[int]$location.PatchOffset + $i] = $location.PatchedBytes[$i]
+            }
         }
 
         try {
@@ -4616,14 +4535,6 @@ function Invoke-VerifiedBinaryPatch {
             }
             if (-not [BinaryScannerV3]::MatchBytes($writtenBytes, 0, $patchedFileBytes)) {
                 throw "$PatchName patch changed unexpected bytes"
-            }
-            $writtenPeInfo = Get-PEFileInfo -Bytes $writtenBytes
-            $writtenLocation = & $Locator $writtenBytes $writtenPeInfo
-            if ($writtenPeInfo.Architecture -ne $peInfo.Architecture -or
-                $writtenLocation.Architecture -ne $location.Architecture -or
-                $writtenLocation.State -ne 'Patched' -or $writtenLocation.PatchOffset -ne $location.PatchOffset -or
-                -not [BinaryScannerV3]::MatchBytes($writtenBytes, [int]$location.PatchOffset, $location.PatchedBytes)) {
-                throw "$PatchName patch verification failed"
             }
         }
         catch {
@@ -4645,10 +4556,13 @@ function Invoke-VerifiedBinaryPatch {
             throw $patchError
         }
 
-        Write-Verbose ("{0} patched at offset 0x{1:X} with {2}" -f
-            $PatchName,
-            $location.PatchOffset,
-            (($location.PatchedBytes | ForEach-Object { $_.ToString('X2') }) -join ' '))
+        foreach ($location in $locations) {
+            $locationName = if ($location.PatchName) { $location.PatchName } else { $PatchName }
+            Write-Verbose ("{0} patched at offset 0x{1:X} with {2}" -f
+                $locationName,
+                $location.PatchOffset,
+                (($location.PatchedBytes | ForEach-Object { $_.ToString('X2') }) -join ' '))
+        }
         return $true
     }
     catch {
@@ -4790,6 +4704,8 @@ function Find-X64CrossfadeEnabledBinaryPatchLocation {
     }
 }
 
+
+
 function Find-Arm64CrossfadeEnabledBinaryPatchLocation {
     param(
         [byte[]]$Bytes,
@@ -4902,10 +4818,225 @@ function Find-CrossfadeEnabledBinaryPatchLocation {
     }
 }
 
+function Find-X64ListPlayerBinaryPatchLocation {
+    param([byte[]]$Bytes, [object]$PeInfo)
+
+    if ($PeInfo.Architecture -ne 'x64') { throw 'ListPlayer locator requires x64' }
+    $context = Get-BinaryPatchContext -PeInfo $PeInfo
+    $anchor = Get-UniqueBinaryAnchor -Bytes $Bytes -PeInfo $PeInfo -Text 'enable_list_player' -NullTerminated
+    $ownerBytes = [Text.Encoding]::ASCII.GetBytes("core-list-player`0")
+    $anchorRefs = @([BinaryScannerV3]::FindRipLeaRefs(
+        $Bytes, [int]$context.Text.RawPtr, [int]$context.Text.RawSize, $anchor.Rva,
+        $context.RawPtrs, $context.RawSizes, $context.VirtualAddresses
+    ))
+
+    $pattern = Convert-HexStringToBytes (
+        '48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 40 48 8B F9 ' +
+        '48 8D 2D 00 00 00 00 48 8B CD E8 00 00 00 00 48 8D 35 00 00 00 00 ' +
+        '48 8B D8 48 8B CE E8 00 00 00 00 45 33 C9 48 89 6C 24 20 4C 8D 44 24 20 ' +
+        '48 89 5C 24 28 48 8D 54 24 30 48 89 74 24 30 48 8B CF 48 89 44 24 38 ' +
+        '00 00 00 00 00 48 8B 5C 24 50 48 8B 6C 24 58 48 8B 74 24 60 48 83 C4 40 5F C3'
+    )
+    $mask = [byte[]](@(0xFF) * $pattern.Length)
+    foreach ($span in @(@(0x1A, 4), @(0x22, 4), @(0x29, 4), @(0x34, 4), @(0x5C, 5))) {
+        for ($i = 0; $i -lt $span[1]; $i++) { $mask[$span[0] + $i] = 0 }
+    }
+    $patchedBytes = Convert-HexStringToBytes 'B0 00 90 90 90'
+    $optionalBool = Convert-HexStringToBytes 'FF D7 33 FF 40 38 78 01 74 03 44 8A 30'
+    $returnBool = Convert-HexStringToBytes '41 8A C6 48 8B 4D F8'
+    $candidates = @{}
+    foreach ($reference in $anchorRefs) {
+        $refRva = Get-PERvaFromOffset -Sections $PeInfo.Sections -Offset $reference
+        $range = Get-BinaryPatchFunctionRange -Bytes $Bytes -PeInfo $PeInfo -Context $context -Rva $refRva
+        if ($range.Length -ne 2 -or $refRva - [int64]$range[0] -ne 0x17 -or
+            [int64]$range[1] - [int64]$range[0] -ne $pattern.Length) { continue }
+        $start = Get-PEOffsetFromRva -Sections $PeInfo.Sections -Rva $range[0]
+        if ($null -eq $start -or -not [BinaryScannerV3]::MatchMaskedBytes($Bytes, $start, $pattern, $mask)) { continue }
+        $ownerRva = [int64]$range[0] + 0x2D + [BitConverter]::ToInt32($Bytes, $start + 0x29)
+        $ownerOffset = Get-PEOffsetFromRva -Sections $PeInfo.Sections -Rva $ownerRva
+        if ($null -eq $ownerOffset -or -not [BinaryScannerV3]::MatchBytes($Bytes, $ownerOffset, $ownerBytes)) { continue }
+
+        # The registration function uses the same strings but does not return a boolean
+        $callers = @([BinaryScannerV3]::FindCrossfadeGateCallsToRva(
+            $Bytes, [int]$context.Text.RawPtr, [int]$context.Text.RawSize, $range[0],
+            $context.RawPtrs, $context.RawSizes, $context.VirtualAddresses
+        ) | Where-Object {
+            $callRva = Get-PERvaFromOffset -Sections $PeInfo.Sections -Offset $_
+            $callRange = Get-BinaryPatchFunctionRange -Bytes $Bytes -PeInfo $PeInfo -Context $context -Rva $callRva
+            $callRange.Length -eq 2 -and $callRva + 7 -le $callRange[1] -and ($Bytes[$_ + 6] -band 0x38) -eq 0
+        })
+        if ($callers.Count -eq 0) { continue }
+        $offset = $start + 0x5C
+        $originalBytes = $null
+        if ([BinaryScannerV3]::MatchBytes($Bytes, $offset, $patchedBytes)) {
+            $state = 'Patched'
+        }
+        elseif ($Bytes[$offset] -eq 0xE8) {
+            $targetRva = [int64]$range[0] + 0x61 + [BitConverter]::ToInt32($Bytes, $offset + 1)
+            $targetRange = Get-BinaryPatchFunctionRange -Bytes $Bytes -PeInfo $PeInfo -Context $context -Rva $targetRva
+            if ($targetRange.Length -ne 2 -or $targetRange[0] -ne $targetRva) { continue }
+            $target = Get-PEOffsetFromRva -Sections $PeInfo.Sections -Rva $targetRva
+            if ($null -eq $target) { continue }
+            $end = $target + $targetRange[1] - $targetRva
+            $optionalOffset = [BinaryScannerV3]::FindBytes($Bytes, $optionalBool, $target)
+            $returnOffset = [BinaryScannerV3]::FindBytes($Bytes, $returnBool, $target)
+            if ($optionalOffset -lt $target -or $optionalOffset + $optionalBool.Length -gt $end -or
+                $returnOffset -lt $optionalOffset -or $returnOffset + $returnBool.Length -gt $end) { continue }
+            $originalBytes = [byte[]]$Bytes[$offset..($offset + 4)]
+            $state = 'Original'
+        }
+        else { continue }
+        $candidates[$offset] = [PSCustomObject]@{
+            Architecture   = 'x64'
+            PatchName      = 'crossfade_enabled.enable_list_player=false'
+            FunctionRva    = [int64]$range[0]
+            PatchOffset    = [int64]$offset
+            OriginalBytes  = $originalBytes
+            PatchedBytes   = $patchedBytes
+            State          = $state
+            AnchorRefCount = $anchorRefs.Count
+        }
+    }
+    if ($candidates.Count -ne 1) { throw "Expected one x64 ListPlayer boolean reader, found $($candidates.Count)" }
+    return @($candidates.Values)[0]
+}
+
+function Find-Arm64ListPlayerBinaryPatchLocations {
+    param([byte[]]$Bytes, [object]$PeInfo)
+
+    $context = Get-BinaryPatchContext -PeInfo $PeInfo
+    $anchor = Get-UniqueBinaryAnchor -Bytes $Bytes -PeInfo $PeInfo -Text 'enable_list_player' -NullTerminated
+    $anchorRefs = @([BinaryScannerV3]::FindXrefArm64(
+        $Bytes, [uint64]$anchor.Rva, [uint64]$context.Text.VirtualAddress,
+        [uint32]$context.Text.RawPtr, [uint32]$context.Text.RawSize
+    ))
+    $ownerBytes = [Text.Encoding]::ASCII.GetBytes("core-list-player`0")
+    $patchedBytes = Convert-HexStringToBytes '00 00 80 52'
+    $optionalBool = Convert-HexStringToBytes '80 02 3F D6 08 04 40 39 48 00 00 34 13 00 40 39'
+    $returnBool = Convert-HexStringToBytes 'E0 03 13 2A FF 43 01 91'
+    $registration = Convert-HexStringToBytes '13 41 40 F9 F4 03 05 2A'
+    $coveredRefs = @{}
+    $candidates = @{}
+    foreach ($reference in $anchorRefs) {
+        if ($coveredRefs.ContainsKey($reference)) { continue }
+        $refRva = Get-PERvaFromOffset -Sections $PeInfo.Sections -Offset $reference
+        $range = Get-BinaryPatchFunctionRange -Bytes $Bytes -PeInfo $PeInfo -Context $context -Rva $refRva
+        if ($range.Length -ne 2 -or $refRva + 0x44 -gt $range[1]) { continue }
+        $keyAdd = Read-Arm64Instruction -Bytes $Bytes -Offset ($reference + 4)
+        if (($keyAdd -band 31) -ne 0) { continue }
+
+        foreach ($distance in @(0x10, 0x14, 0x18)) {
+            $ownerRef = $reference + $distance
+            $ownerPage = Read-Arm64Instruction -Bytes $Bytes -Offset $ownerRef
+            $ownerAdd = Read-Arm64Instruction -Bytes $Bytes -Offset ($ownerRef + 4)
+            if (($ownerPage -band [uint32]0x9F000000L) -ne [uint32]0x90000000L -or
+                ($ownerAdd -band [uint32]0xFFC0001FL) -ne [uint32]0x91000000L -or
+                (($ownerAdd -shr 5) -band 31) -ne ($ownerPage -band 31)) { continue }
+            $pageImmediate = [int64]((($ownerPage -shr 5) -band 0x7FFFF) -shl 2) -bor [int64](($ownerPage -shr 29) -band 3)
+            $ownerRva = (($refRva + $distance) -band -4096L) +
+                ((ConvertFrom-Arm64SignedImmediate -Value $pageImmediate -Bits 21) -shl 12) + (($ownerAdd -shr 10) -band 0xFFF)
+            $ownerOffset = Get-PEOffsetFromRva -Sections $PeInfo.Sections -Rva $ownerRva
+            if ($null -eq $ownerOffset -or -not [BinaryScannerV3]::MatchBytes($Bytes, $ownerOffset, $ownerBytes)) { continue }
+            $saveLength = Read-Arm64Instruction -Bytes $Bytes -Offset ($ownerRef - 4)
+            $lengthRegister = $saveLength -band 31
+            if (($saveLength -band [uint32]0xFFFFFFE0L) -ne [uint32]0xAA0003E0L -or
+                $lengthRegister -lt 19 -or $lengthRegister -gt 28) { continue }
+            $keyLengthCall = Read-Arm64Instruction -Bytes $Bytes -Offset ($ownerRef - 8)
+            $ownerLengthCall = Read-Arm64Instruction -Bytes $Bytes -Offset ($ownerRef + 8)
+            if (($keyLengthCall -band [uint32]0xFC000000L) -ne [uint32]0x94000000L -or
+                ($ownerLengthCall -band [uint32]0xFC000000L) -ne [uint32]0x94000000L) { continue }
+            $keyLengthTarget = Get-Arm64BranchTargetRva -Instruction $keyLengthCall -InstructionRva ($refRva + $distance - 8) -Kind BL
+            $ownerLengthTarget = Get-Arm64BranchTargetRva -Instruction $ownerLengthCall -InstructionRva ($refRva + $distance + 8) -Kind BL
+            if ($keyLengthTarget -ne $ownerLengthTarget) { continue }
+
+            $setup = @()
+            for ($i = 0; $i -lt 8; $i++) { $setup += Read-Arm64Instruction -Bytes $Bytes -Offset ($ownerRef + 12 + 4 * $i) }
+            $reloadRef = $null
+            if ($setup[0] -eq [uint32]0xAA0003E2L) {
+                $keyRegister = ($keyAdd -shr 5) -band 31
+                $ownerRegister = $ownerPage -band 31
+                if ($keyRegister -lt 19 -or $keyRegister -gt 28 -or $ownerRegister -lt 19 -or $ownerRegister -gt 28 -or
+                    $setup[2] -ne [uint32]0x52800005L -or
+                    $setup[3] -ne ([uint32]0xAA0003E4L -bor ($lengthRegister -shl 16)) -or
+                    $setup[4] -ne ($keyAdd -bor 3) -or $setup[5] -ne ($ownerAdd -bor 1)) { continue }
+                $resolver = $setup[1]
+                $patchOffset = $ownerRef + 36
+            }
+            else {
+                # Some inlined readers reload both string addresses after strlen
+                $reloadRef = $ownerRef + 12
+                if ($anchorRefs -notcontains $reloadRef -or $setup[1] -ne ($keyAdd -bor 3) -or
+                    $setup[2] -ne $ownerPage -or $setup[3] -ne ($ownerAdd -bor 1) -or
+                    $setup[4] -ne [uint32]0xAA0003E2L -or $setup[5] -ne [uint32]0x52800005L -or
+                    $setup[6] -ne ([uint32]0xAA0003E4L -bor ($lengthRegister -shl 16))) { continue }
+                $resolver = $setup[7]
+                $patchOffset = $ownerRef + 44
+            }
+            $resolverMove = ($resolver -band [uint32]0xFFE0FFFFL) -eq [uint32]0xAA0003E0L
+            $resolverLoad = ($resolver -band [uint32]0xFFFFFC1FL) -eq [uint32]0xF9400000L
+            if (-not $resolverMove -and -not $resolverLoad) { continue }
+            $patchRva = $refRva + $patchOffset - $reference
+            if ($patchRva + 12 -gt $range[1]) { continue }
+            $instruction = Read-Arm64Instruction -Bytes $Bytes -Offset $patchOffset
+            $next = Read-Arm64Instruction -Bytes $Bytes -Offset ($patchOffset + 4)
+            $afterNext = Read-Arm64Instruction -Bytes $Bytes -Offset ($patchOffset + 8)
+            $usesBool = ($next -band [uint32]0xFFFFFFE0L) -eq [uint32]0x2A0003E0L -or
+                ($next -band [uint32]0xFFF8001FL) -eq [uint32]0x36000000L -or
+                (($next -band [uint32]0xFFC0001FL) -eq [uint32]0xF9400008L -and
+                    ($afterNext -band [uint32]0xFFFFFFE0L) -eq [uint32]0x53001C00L)
+            $originalBytes = $null
+            if ($instruction -eq [uint32]0x52800000L -and $usesBool) {
+                $state = 'Patched'
+            }
+            elseif (($instruction -band [uint32]0xFC000000L) -eq [uint32]0x94000000L) {
+                $targetRva = Get-Arm64BranchTargetRva -Instruction $instruction -InstructionRva $patchRva -Kind BL
+                $targetRange = Get-BinaryPatchFunctionRange -Bytes $Bytes -PeInfo $PeInfo -Context $context -Rva $targetRva
+                if ($targetRange.Length -ne 2 -or $targetRange[0] -ne $targetRva) { continue }
+                $target = Get-PEOffsetFromRva -Sections $PeInfo.Sections -Rva $targetRva
+                if ($null -eq $target) { continue }
+                $end = $target + $targetRange[1] - $targetRva
+                $optionalOffset = [BinaryScannerV3]::FindBytes($Bytes, $optionalBool, $target)
+                $returnOffset = [BinaryScannerV3]::FindBytes($Bytes, $returnBool, $target)
+                if ($usesBool -and $optionalOffset -ge $target -and $optionalOffset + $optionalBool.Length -le $end -and
+                    $returnOffset -gt $optionalOffset -and $returnOffset + $returnBool.Length -le $end) {
+                    $state = 'Original'
+                    $originalBytes = [BitConverter]::GetBytes([uint32]$instruction)
+                }
+                else {
+                    $registrationOffset = [BinaryScannerV3]::FindBytes($Bytes, $registration, $target)
+                    if (-not $usesBool -and $registrationOffset -ge $target -and $registrationOffset + $registration.Length -le $end) {
+                        $coveredRefs[$reference] = $true
+                    }
+                    continue
+                }
+            }
+            else { continue }
+            $coveredRefs[$reference] = $true
+            if ($null -ne $reloadRef) { $coveredRefs[$reloadRef] = $true }
+            $candidates[$patchOffset] = [PSCustomObject]@{
+                Architecture   = 'ARM64'
+                PatchName      = 'crossfade_enabled.enable_list_player=false'
+                FunctionRva    = [int64]$range[0]
+                PatchOffset    = [int64]$patchOffset
+                OriginalBytes  = $originalBytes
+                PatchedBytes   = $patchedBytes
+                State          = $state
+                AnchorRefCount = $anchorRefs.Count
+            }
+        }
+    }
+    if ($candidates.Count -eq 0 -or $coveredRefs.Count -ne $anchorRefs.Count) {
+        throw "Unrecognized ARM64 ListPlayer readers: $($coveredRefs.Count)/$($anchorRefs.Count) references resolved"
+    }
+    return $candidates.Values
+}
+
 function Set-CrossfadeEnabledBinaryPatch {
     [CmdletBinding()]
     param (
-        [string]$FilePath
+        [string]$FilePath,
+        [Parameter(Mandatory = $true)]
+        [version]$TargetVersion
     )
 
     return Invoke-VerifiedBinaryPatch `
@@ -4914,11 +5045,18 @@ function Set-CrossfadeEnabledBinaryPatch {
         -Locator {
             param([byte[]]$Bytes, [object]$PeInfo)
             Find-CrossfadeEnabledBinaryPatchLocation -Bytes $Bytes -PeInfo $PeInfo
+            if ($TargetVersion -ge [version]'1.2.98') {
+                switch ($PeInfo.Architecture) {
+                    'x64' { Find-X64ListPlayerBinaryPatchLocation -Bytes $Bytes -PeInfo $PeInfo }
+                    'ARM64' { Find-Arm64ListPlayerBinaryPatchLocations -Bytes $Bytes -PeInfo $PeInfo }
+                }
+            }
         } `
         -DescribeLocation {
             param([object]$Location)
-            Write-Verbose ("crossfade_enabled {0} function RVA 0x{1:X}, references {2}" -f
-                $Location.Architecture, $Location.FunctionRva, $Location.AnchorRefCount)
+            $name = if ($Location.PatchName) { $Location.PatchName } else { 'crossfade_enabled' }
+            Write-Verbose ("{0} {1} function RVA 0x{2:X}, references {3}" -f
+                $name, $Location.Architecture, $Location.FunctionRva, $Location.AnchorRefCount)
         }
 }
 
@@ -5040,9 +5178,259 @@ function Update-ZipEntry {
 }
 
 
-Write-Host ($lang).ModSpoti`n
+function Get-SpotXResources {
+    param([version]$TargetVersion, [string]$DownloadFolder)
 
-Remove-TempDirectory -Directory $tempDirectory
+    $patches = Get-PatchesJson -LocalPath $CustomPatchesPath
+    if ($patches -isnot [PSCustomObject] -or $patches.others -isnot [PSCustomObject]) {
+        throw 'Failed to load a valid patches.json'
+    }
+
+    $resources = [ordered]@{
+        Patches = $patches
+        Translation = $null
+        CheckVersion = $null
+        Section = $null
+        Goofy = $null
+        LyricsRules = $null
+        LyricsColors = $null
+        Login = $null
+    }
+
+    if ($langCode -eq 'ru' -and $TargetVersion -ge [version]'1.1.92.644') {
+        $translation = Get -Url (Get-Link -e '/patches/Augmented%20translation/ru.json')
+        if ($translation -is [PSCustomObject]) { $resources.Translation = $translation }
+        else { Write-Warning 'Additional Russian translation is unavailable, skipping it' }
+    }
+
+    $needsSection = $podcast_off -or $adsections_off -or ($canvashome_off -and $TargetVersion -gt [version]'1.2.44.405')
+    $optionalFiles = @(
+        @{ Name = 'CheckVersion'; Path = '/js-helper/checkVersion.js'; Enabled = !$sendversion_off },
+        @{ Name = 'Section'; Path = '/js-helper/sectionBlock.js'; Enabled = $needsSection },
+        @{ Name = 'Goofy'; Path = '/js-helper/goofyHistory.js'; Enabled = $urlform_goofy -and $idbox_goofy },
+        @{ Name = 'LyricsRules'; Path = '/css-helper/lyrics-color/rules.css'; Enabled = [bool]$lyrics_stat },
+        @{ Name = 'LyricsColors'; Path = '/css-helper/lyrics-color/colors.css'; Enabled = [bool]$lyrics_stat }
+    )
+    foreach ($file in $optionalFiles) {
+        if (!$file.Enabled) { continue }
+        $content = Get -Url (Get-Link -e $file.Path)
+        if ($content -is [string] -and ![string]::IsNullOrWhiteSpace($content)) {
+            $resources[$file.Name] = $content
+        }
+        else {
+            Write-Warning ("Optional resource is unavailable, skipping it: {0}" -f $file.Path)
+        }
+    }
+    if (!$resources.LyricsRules -or !$resources.LyricsColors) {
+        $resources.LyricsRules = $null
+        $resources.LyricsColors = $null
+    }
+
+    if ($TargetVersion -ge [version]'1.1.87.612' -and $TargetVersion -le [version]'1.2.5.1006') {
+        $loginPath = Join-Path $DownloadFolder 'login.spa'
+        $null = Get -Url (Get-Link -e '/res/login.spa') -OutputPath $loginPath
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = $null
+        try {
+            $archive = [IO.Compression.ZipFile]::OpenRead($loginPath)
+            if ($archive.Entries.Count -eq 0) { throw 'Downloaded login.spa is empty' }
+            foreach ($entry in $archive.Entries) {
+                $stream = $entry.Open()
+                try { $stream.CopyTo([IO.Stream]::Null) }
+                finally { $stream.Dispose() }
+            }
+        }
+        finally {
+            if ($null -ne $archive) { $archive.Dispose() }
+        }
+        $resources.Login = [IO.File]::ReadAllBytes($loginPath)
+    }
+
+    return [PSCustomObject]$resources
+}
+
+function Test-SpotifyInstall {
+    param([string]$Directory, [version]$ExpectedVersion, [string]$ExpectedArchitecture)
+
+    $requiredFiles = @('Spotify.exe', 'Apps\xpui.spa')
+    if ($ExpectedVersion -ge [version]'1.2.70.253') { $requiredFiles += 'Spotify.dll', 'chrome_elf.dll' }
+    if ($ExpectedVersion -ge [version]'1.2.84.476') { $requiredFiles += 'uninstall.exe' }
+    foreach ($name in $requiredFiles) {
+        $path = Join-Path $Directory $name
+        if (!(Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
+            throw "Extracted Spotify file is missing or empty: $name"
+        }
+    }
+
+    $executable = Join-Path $Directory 'Spotify.exe'
+    $actualVersion = Get-SpotifyVersionNumber -SpotifyVersion (Get-Item -LiteralPath $executable).VersionInfo.FileVersion
+    if ($actualVersion -ne $ExpectedVersion) {
+        throw "Extracted Spotify version mismatch: expected $ExpectedVersion, got $actualVersion"
+    }
+    $peInfo = Get-PEFileInfo -Bytes ([IO.File]::ReadAllBytes($executable))
+    if ($peInfo.Architecture -ine $ExpectedArchitecture) {
+        throw "Extracted Spotify architecture mismatch: expected $ExpectedArchitecture, got $($peInfo.Architecture)"
+    }
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = $null
+    try {
+        $archive = [IO.Compression.ZipFile]::OpenRead((Join-Path $Directory 'Apps\xpui.spa'))
+        $requiredEntries = @('index.html')
+        if ($null -ne $archive.GetEntry('xpui.js')) {
+            $requiredEntries += 'xpui.js', 'xpui.css'
+        }
+        else {
+            $requiredEntries += 'xpui-snapshot.js', 'xpui-snapshot.css'
+            $snapshots = @('v8_context_snapshot.bin', 'v8_context_snapshot.arm64.bin') | Where-Object {
+                $path = Join-Path $Directory $_
+                (Test-Path -LiteralPath $path -PathType Leaf) -and (Get-Item -LiteralPath $path).Length -gt 0
+            }
+            if (!$snapshots) { throw 'Extracted Spotify V8 snapshot is missing or empty' }
+        }
+        foreach ($name in $requiredEntries) {
+            $entry = $archive.GetEntry($name)
+            if ($null -eq $entry -or $entry.Length -eq 0) { throw "Extracted xpui.spa entry is missing or empty: $name" }
+        }
+        foreach ($entry in $archive.Entries) {
+            $stream = $entry.Open()
+            try { $stream.CopyTo([IO.Stream]::Null) }
+            finally { $stream.Dispose() }
+        }
+    }
+    finally {
+        if ($null -ne $archive) { $archive.Dispose() }
+    }
+}
+
+function Expand-SpotifyInstaller {
+    param([string]$DownloadFolder, [version]$ExpectedVersion, [string]$ExpectedArchitecture)
+
+    downloadSp -DownloadFolder $DownloadFolder
+    $setupExe = Join-Path $DownloadFolder 'SpotifySetup.exe'
+    $destination = Join-Path $DownloadFolder 'client'
+    $process = $null
+    try {
+        $process = Start-Process -FilePath $setupExe -ArgumentList ('/extract "{0}"' -f $destination) `
+            -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+        if ($process.ExitCode -ne 0) { throw "Spotify extraction failed with exit code $($process.ExitCode)" }
+    }
+    finally {
+        if ($null -ne $process) { $process.Dispose() }
+    }
+    Test-SpotifyInstall -Directory $destination -ExpectedVersion $ExpectedVersion -ExpectedArchitecture $ExpectedArchitecture
+    return $destination
+}
+
+function Register-SpotifyInstall {
+    param([string]$Directory, [version]$InstalledVersion)
+
+    $executable = Join-Path $Directory 'Spotify.exe'
+    $uninstallCommand = if ($InstalledVersion -ge [version]'1.2.84.476') {
+        '"{0}"' -f (Join-Path $Directory 'uninstall.exe')
+    }
+    else { '"{0}" /uninstall' -f $executable }
+    $registryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Spotify'
+    if (!(Test-Path -LiteralPath $registryPath)) {
+        $null = New-Item -Path $registryPath -Force -ErrorAction Stop
+    }
+    $values = @{
+        DisplayName = 'Spotify'
+        DisplayVersion = $InstalledVersion.ToString()
+        DisplayIcon = '"{0}",0' -f $executable
+        Publisher = 'Spotify AB'
+        UninstallString = $uninstallCommand
+        URLInfoAbout = 'https://www.spotify.com'
+    }
+    foreach ($name in $values.Keys) {
+        $null = New-ItemProperty -LiteralPath $registryPath -Name $name -Value $values[$name] -PropertyType String -Force -ErrorAction Stop
+    }
+}
+
+try {
+    $tempDirectory = Join-Path ([IO.Path]::GetTempPath()) ('SpotX_Temp-' + [Guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $tempDirectory -ErrorAction Stop
+    $resources = Get-SpotXResources -TargetVersion ([version]$offline) -DownloadFolder $tempDirectory
+    $webjson = $resources.Patches
+    $webjsonru = $resources.Translation
+    $ru = $null -ne $webjsonru
+
+    if ($installSpotify) {
+        Write-Host ($lang).DownSpoti"" -NoNewline
+        Write-Host $online -ForegroundColor Green
+        Write-Host ($lang).DownSpoti2`n
+        $architecture = Get-SpotifyInstallerArchitecture -SystemArchitecture $systemArchitecture `
+            -SpotifyVersion ([version]$online) -LastX86SupportedVersion $last_x86
+        $preparedClient = Expand-SpotifyInstaller -DownloadFolder $tempDirectory `
+            -ExpectedVersion ([version]$online) -ExpectedArchitecture $architecture
+        Write-Host
+    }
+
+    Kill-Spotify
+    if ($uninstallStoreSpotify) {
+        $previousProgressPreference = $ProgressPreference
+        try {
+            $ProgressPreference = 'SilentlyContinue'
+            if ($confirm_uninstall_ms_spoti) { Write-Host ($lang).MsSpoti3`n }
+            else { Write-Host ($lang).MsSpoti4`n }
+            Get-AppxPackage -Name SpotifyAB.SpotifyMusic | Remove-AppxPackage -ErrorAction Stop
+        }
+        finally { $ProgressPreference = $previousProgressPreference }
+    }
+
+    if ($installSpotify) {
+        $null = Unlock-Folder
+        if ($uninstallSpotify) {
+            Write-Host ($lang).DelSpotify`n
+            Invoke-SpotifyUninstall -InstalledVersion $installedVersion
+        }
+        $destination = [IO.Path]::GetFullPath($spotifyDirectory)
+        $destinationPrefix = $destination.TrimEnd('\') + '\'
+        if (Test-Path -LiteralPath $destination) {
+            foreach ($item in Get-ChildItem -LiteralPath $destination -Force -ErrorAction Stop) {
+                if ($item.Name -in @('Users', 'prefs')) { continue }
+                if (!$item.FullName.StartsWith($destinationPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "Unexpected Spotify cleanup path: $($item.FullName)"
+                }
+                Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
+            }
+        }
+        else { $null = New-Item -ItemType Directory -Path $destination -ErrorAction Stop }
+        $preparedPrefix = [IO.Path]::GetFullPath($preparedClient).TrimEnd('\') + '\'
+        foreach ($item in Get-ChildItem -LiteralPath $preparedClient -Force -ErrorAction Stop) {
+            if (!$item.FullName.StartsWith($preparedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Unexpected Spotify staging path: $($item.FullName)"
+            }
+            if (!$uninstallSpotify -and $item.Name -in @('Users', 'prefs') -and
+                (Test-Path -LiteralPath (Join-Path $destination $item.Name))) { continue }
+            Move-Item -LiteralPath $item.FullName -Destination $destination -Force -ErrorAction Stop
+        }
+        $offline = (Get-Item -LiteralPath $spotifyExecutable -ErrorAction Stop).VersionInfo.FileVersion
+        Register-SpotifyInstall -Directory $destination -InstalledVersion ([version]$offline)
+    }
+
+    if ($no_shortcut) {
+        $desktop_folder = DesktopFolder
+        Remove-Item -LiteralPath (Join-Path $desktop_folder 'Spotify.lnk') -Force -ErrorAction SilentlyContinue
+    }
+    if ($installSpotify -and $not_block_update -and (Test-Path -LiteralPath $exe_bak)) {
+        $offline_bak = (Get-Item -LiteralPath $exe_bak -ErrorAction Stop).VersionInfo.FileVersion
+        if ($offline -eq $offline_bak) {
+            Remove-Item -LiteralPath $spotifyExecutable -Force -ErrorAction Stop
+            Rename-Item -LiteralPath $exe_bak -NewName $spotifyExecutable -ErrorAction Stop
+        }
+    }
+}
+catch {
+    Write-Warning $_.Exception.Message
+    Stop-Script
+}
+finally {
+    Remove-TempDirectory -Directory $tempDirectory
+    $tempDirectory = $null
+}
+
+Write-Host ($lang).ModSpoti`n
 
 $xpui_js_patch = Join-Path (Join-Path (Join-Path $spotifyDirectory 'Apps') 'xpui') 'xpui.js'
 $test_spa = Test-Path -Path $xpui_spa_patch
@@ -5257,7 +5645,7 @@ if ($test_spa) {
 
     # Send new versions
     if (!($sendversion_off)) {
-        $checkVersion = Get -Url (Get-Link -e "/js-helper/checkVersion.js")
+        $checkVersion = $resources.CheckVersion
 
         if ($checkVersion -ne $null) {
             injection -p $xpui_spa_patch -f "spotx-helper" -n "checkVersion.js" -c $checkVersion
@@ -5267,7 +5655,7 @@ if ($test_spa) {
     # Hiding Ad-like sections or turn off podcasts from the homepage
     if ($podcast_off -or $adsections_off -or $canvashome_off) {
 
-        $section = Get -Url (Get-Link -e "/js-helper/sectionBlock.js")
+        $section = $resources.Section
 
         if ($section -ne $null) {
 
@@ -5293,7 +5681,7 @@ if ($test_spa) {
     # goofy History
     if ($urlform_goofy -and $idbox_goofy) {
 
-        $goofy = Get -Url (Get-Link -e "/js-helper/goofyHistory.js")
+        $goofy = $resources.Goofy
 
         if ($goofy -ne $null) {
 
@@ -5302,9 +5690,9 @@ if ($test_spa) {
     }
 
     # Static color for lyrics
-    if ($lyrics_stat) {
-        $rulesContent = Get -Url (Get-Link -e "/css-helper/lyrics-color/rules.css")
-        $colorsContent = Get -Url (Get-Link -e "/css-helper/lyrics-color/colors.css")
+    if ($lyrics_stat -and $resources.LyricsRules -and $resources.LyricsColors) {
+        $rulesContent = $resources.LyricsRules
+        $colorsContent = $resources.LyricsColors
 
         $colorsContent = $colorsContent -replace '{{past}}', "$($webjson.others.themelyrics.theme.$lyrics_stat.pasttext)"
         $colorsContent = $colorsContent -replace '{{current}}', "$($webjson.others.themelyrics.theme.$lyrics_stat.current)"
@@ -5485,13 +5873,13 @@ if ($spotify_binary_bak -eq $dll_bak -and !$premium -and [version]$offline -ge [
 }
 
 if ($spotify_binary_bak -eq $dll_bak -and !$premium -and [version]$offline -ge [version]'1.2.89') {
-    $null = Set-CrossfadeEnabledBinaryPatch -FilePath $spotifyDll
+    $null = Set-CrossfadeEnabledBinaryPatch -FilePath $spotifyDll -TargetVersion ([version]$offline)
 }
 
 # fix login for old versions
 if ([version]$offline -ge [version]"1.1.87.612" -and [version]$offline -le [version]"1.2.5.1006") {
     $login_spa = Join-Path (Join-Path $spotifyDirectory 'Apps') 'login.spa'
-    Get -Url (Get-Link -e "/res/login.spa") -OutputPath $login_spa
+    [IO.File]::WriteAllBytes($login_spa, $resources.Login)
 }
 
 # Disable Startup client

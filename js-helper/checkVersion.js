@@ -138,7 +138,7 @@
         throw new Error(`HTTP error: ${response.status}`);
       }
 
-      return response.json();
+      return await response.json();
     } finally {
       clearTimeout(timeoutId);
     }
@@ -555,95 +555,97 @@
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), CONFIG.desktopUpdateTimeoutMs);
 
-    let response;
     try {
-      response = await originalFetch(CONFIG.updateUrl, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Spotify-App-Version": spotifyAppVersion,
-          "App-Platform": platform.code
-        },
-        signal: controller.signal
-      });
-    } catch (error) {
-      return buildRequestErrorResult({
-        finalUrl: CONFIG.updateUrl,
-        status: null,
-        headers: {},
-        contentType: null,
-        contentLength: null
-      }, formatDesktopUpdateError(platform, error));
+      let response;
+      try {
+        response = await originalFetch(CONFIG.updateUrl, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Spotify-App-Version": spotifyAppVersion,
+            "App-Platform": platform.code
+          },
+          signal: controller.signal
+        });
+      } catch (error) {
+        return buildRequestErrorResult({
+          finalUrl: CONFIG.updateUrl,
+          status: null,
+          headers: {},
+          contentType: null,
+          contentLength: null
+        }, formatDesktopUpdateError(platform, error));
+      }
+
+      const finalUrl = response.url || CONFIG.updateUrl;
+      const headers = readResponseHeaders(response.headers);
+      const contentType = response.headers?.get?.("content-type") || null;
+      const contentLength = response.headers?.get?.("content-length") || null;
+
+      if (!response.ok) {
+        return buildRequestErrorResult({
+          finalUrl,
+          status: response.status,
+          headers,
+          contentType,
+          contentLength
+        }, `${platform.code} HTTP error: ${response.status}`);
+      }
+
+      let buffer;
+      try {
+        buffer = await response.arrayBuffer();
+      } catch (error) {
+        return buildRequestErrorResult({
+          finalUrl,
+          status: response.status,
+          headers,
+          contentType,
+          contentLength
+        }, formatDesktopUpdateError(platform, error));
+      }
+
+      const bodyLatin1 = decodeLatin1Buffer(buffer);
+      const extractedUpgradeLink = extractUpgradeLink(bodyLatin1);
+      const baseResult = {
+        finalUrl,
+        status: response.status,
+        headers,
+        contentType,
+        contentLength,
+        byteLength: buffer.byteLength,
+        bodyLatin1,
+        extractedUpgradeLink
+      };
+
+      if (!extractedUpgradeLink) {
+        return {
+          outcome: "empty_response",
+          ...baseResult,
+          parseErrorMessage: null,
+          errorMessage: null
+        };
+      }
+
+      try {
+        const asset = parseUpgradeAsset(platform, extractedUpgradeLink);
+        return {
+          outcome: "success",
+          ...baseResult,
+          parseErrorMessage: null,
+          errorMessage: null,
+          asset
+        };
+      } catch (error) {
+        return {
+          outcome: "parse_error",
+          ...baseResult,
+          parseErrorMessage: error?.message || String(error),
+          errorMessage: null
+        };
+      }
     } finally {
       clearTimeout(timeoutId);
-    }
-
-    const finalUrl = response.url || CONFIG.updateUrl;
-    const headers = readResponseHeaders(response.headers);
-    const contentType = response.headers?.get?.("content-type") || null;
-    const contentLength = response.headers?.get?.("content-length") || null;
-
-    if (!response.ok) {
-      return buildRequestErrorResult({
-        finalUrl,
-        status: response.status,
-        headers,
-        contentType,
-        contentLength
-      }, `${platform.code} HTTP error: ${response.status}`);
-    }
-
-    let buffer;
-    try {
-      buffer = await response.arrayBuffer();
-    } catch (error) {
-      return buildRequestErrorResult({
-        finalUrl,
-        status: response.status,
-        headers,
-        contentType,
-        contentLength
-      }, formatDesktopUpdateError(platform, error));
-    }
-
-    const bodyLatin1 = decodeLatin1Buffer(buffer);
-    const extractedUpgradeLink = extractUpgradeLink(bodyLatin1);
-    const baseResult = {
-      finalUrl,
-      status: response.status,
-      headers,
-      contentType,
-      contentLength,
-      byteLength: buffer.byteLength,
-      bodyLatin1,
-      extractedUpgradeLink
-    };
-
-    if (!extractedUpgradeLink) {
-      return {
-        outcome: "empty_response",
-        ...baseResult,
-        parseErrorMessage: null,
-        errorMessage: null
-      };
-    }
-
-    try {
-      const asset = parseUpgradeAsset(platform, extractedUpgradeLink);
-      return {
-        outcome: "success",
-        ...baseResult,
-        parseErrorMessage: null,
-        errorMessage: null,
-        asset
-      };
-    } catch (error) {
-      return {
-        outcome: "parse_error",
-        ...baseResult,
-        parseErrorMessage: error?.message || String(error),
-        errorMessage: null
-      };
     }
   }
 
